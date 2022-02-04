@@ -84,6 +84,7 @@ class CloudMonitoringMetricsExporter(MetricsExporter):
     def __init__(
         self, project_id=None, client=None, add_unique_identifier=False, prefix=None
     ):
+        print("init prefix",prefix)
         self.prefix = prefix
         self.client = client or MetricServiceClient()
         if not project_id:
