@@ -161,7 +161,7 @@ class CloudMonitoringMetricsExporter(MetricsExporter):
         :return:
         """
         instrument = record.instrument
-        print("prefix",self.prefix)
+        print("prefix get metric descriptor",self.prefix)
         if self.prefix != None:
             descriptor_type = "custom.googleapis.com/{}/{}".format(self.prefix,
             instrument.name
