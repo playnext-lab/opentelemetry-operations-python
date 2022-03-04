@@ -66,8 +66,6 @@ OT_RESOURCE_LABEL_TO_GCP = {
         "project_id": "project_id",
         "namespace_name": "namespace_name",
         "cloud.account.id": "project_id",
-        "k8s.pod.name": "pod_id",
-        "host.id": "instance_id",
     }
 }
 
