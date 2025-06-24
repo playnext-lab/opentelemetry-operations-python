@@ -23,6 +23,7 @@ _GCP_METADATA_URL = (
     "http://metadata.google.internal/computeMetadata/v1/?recursive=true"
 )
 _GCP_METADATA_URL_HEADER = {"Metadata-Flavor": "Google"}
+_TIMEOUT_SEC = 5
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,9 @@ logger = logging.getLogger(__name__)
 def _get_google_metadata_and_common_attributes():
     token = attach(set_value("suppress_instrumentation", True))
     all_metadata = requests.get(
-        _GCP_METADATA_URL, headers=_GCP_METADATA_URL_HEADER
+        _GCP_METADATA_URL,
+        headers=_GCP_METADATA_URL_HEADER,
+        timeout=_TIMEOUT_SEC,
     ).json()
     detach(token)
     common_attributes = {
@@ -61,14 +64,18 @@ def get_gce_resources():
 
 def get_gke_resources():
     """Resource finder for GKE attributes"""
-    # The user must specify the container name via the Downward API
-    container_name = os.getenv("CONTAINER_NAME")
-    if container_name is None:
+
+    if os.getenv("KUBERNETES_SERVICE_HOST") is None:
         return {}
+
     (
         common_attributes,
         all_metadata,
     ) = _get_google_metadata_and_common_attributes()
+
+    container_name = os.getenv("CONTAINER_NAME")
+    if container_name is not None:
+        common_attributes["container.name"] = container_name
 
     # Fallback to reading namespace from a file is the env var is not set
     pod_namespace = os.getenv("NAMESPACE")
@@ -89,8 +96,67 @@ def get_gke_resources():
             "k8s.namespace.name": pod_namespace,
             "k8s.pod.name": os.getenv("POD_NAME", os.getenv("HOSTNAME", "")),
             "host.id": all_metadata["instance"]["id"],
-            "container.name": container_name,
             "gcp.resource_type": "gke_container",
+        }
+    )
+    return common_attributes
+
+
+def get_cloudrun_resources():
+    """Resource finder for Cloud Run attributes"""
+
+    if os.getenv("K_CONFIGURATION") is None:
+        return {}
+
+    (
+        common_attributes,
+        all_metadata,
+    ) = _get_google_metadata_and_common_attributes()
+
+    faas_name = os.getenv("K_SERVICE")
+    if faas_name is not None:
+        common_attributes["faas.name"] = str(faas_name)
+
+    faas_version = os.getenv("K_REVISION")
+    if faas_version is not None:
+        common_attributes["faas.version"] = str(faas_version)
+
+    common_attributes.update(
+        {
+            "cloud.platform": "gcp_cloud_run",
+            "cloud.region": all_metadata["instance"]["region"].split("/")[-1],
+            "faas.instance": all_metadata["instance"]["id"],
+            "gcp.resource_type": "cloud_run",
+        }
+    )
+    return common_attributes
+
+
+def get_cloudfunctions_resources():
+    """Resource finder for Cloud Functions attributes"""
+
+    if os.getenv("FUNCTION_TARGET") is None:
+        return {}
+
+    (
+        common_attributes,
+        all_metadata,
+    ) = _get_google_metadata_and_common_attributes()
+
+    faas_name = os.getenv("K_SERVICE")
+    if faas_name is not None:
+        common_attributes["faas.name"] = str(faas_name)
+
+    faas_version = os.getenv("K_REVISION")
+    if faas_version is not None:
+        common_attributes["faas.version"] = str(faas_version)
+
+    common_attributes.update(
+        {
+            "cloud.platform": "gcp_cloud_functions",
+            "cloud.region": all_metadata["instance"]["region"].split("/")[-1],
+            "faas.instance": all_metadata["instance"]["id"],
+            "gcp.resource_type": "cloud_functions",
         }
     )
     return common_attributes
@@ -102,6 +168,8 @@ def get_gke_resources():
 # This list should be sorted from most specialized to least specialized.
 _RESOURCE_FINDERS = [
     ("gke_container", get_gke_resources),
+    ("cloud_run", get_cloudrun_resources),
+    ("cloud_functions", get_cloudfunctions_resources),
     ("gce_instance", get_gce_resources),
 ]
 
@@ -133,6 +201,6 @@ class GoogleCloudResourceDetector(ResourceDetector):
                 if found_resources:
                     self.gcp_resources = found_resources
                     break
-        if not self.gcp_resources:
+        if self.raise_on_error and not self.gcp_resources:
             raise NoGoogleResourcesFound()
         return Resource(self.gcp_resources)

@@ -44,6 +44,28 @@ When not debugging, make sure to use
 :class:`opentelemetry.sdk.trace.export.BatchSpanProcessor` with the
 default parameters for performance reasons.
 
+Auto-instrumentation
+--------------------
+
+This exporter can also be used with `OpenTelemetry auto-instrumentation
+<https://opentelemetry.io/docs/instrumentation/python/automatic/>`_:
+
+.. code-block:: sh
+
+    opentelemetry-instrument --traces_exporter gcp_trace <command> <args>
+
+Configuration is supported through environment variables
+(:mod:`opentelemetry.exporter.cloud_trace.environment_variables`) or the corresponding command
+line arguments to ``opentelemetry-instrument``:
+
+.. code-block:: sh
+
+    opentelemetry-instrument --traces_exporter gcp_trace \\
+        --exporter_gcp_trace_project_id my-project \\
+        <command> <args>
+
+See ``opentelemetry-instrument --help`` for all configuration options.
+
 API
 ---
 """
@@ -51,6 +73,7 @@ API
 import logging
 import re
 from collections.abc import Sequence as SequenceABC
+from os import environ
 from typing import (
     Any,
     Dict,
@@ -64,12 +87,27 @@ from typing import (
 
 import google.auth
 import opentelemetry.trace as trace_api
-import pkg_resources
 from google.cloud.trace_v2 import BatchWriteSpansRequest, TraceServiceClient
 from google.cloud.trace_v2 import types as trace_types
-from google.protobuf.timestamp_pb2 import Timestamp
+from google.cloud.trace_v2.services.trace_service.transports import (
+    TraceServiceGrpcTransport,
+)
+from google.protobuf.timestamp_pb2 import (  # pylint: disable=no-name-in-module
+    Timestamp,
+)
 from google.rpc import code_pb2, status_pb2
+from opentelemetry.exporter.cloud_trace.environment_variables import (
+    OTEL_EXPORTER_GCP_TRACE_PROJECT_ID,
+    OTEL_EXPORTER_GCP_TRACE_RESOURCE_REGEX,
+)
 from opentelemetry.exporter.cloud_trace.version import __version__
+from opentelemetry.resourcedetector.gcp_resource_detector import (
+    _constants as _resource_constants,
+)
+from opentelemetry.resourcedetector.gcp_resource_detector._mapping import (
+    get_monitored_resource,
+)
+from opentelemetry.sdk import version as opentelemetry_sdk_version
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import Event
 from opentelemetry.sdk.trace.export import (
@@ -84,6 +122,19 @@ from opentelemetry.util import types
 
 logger = logging.getLogger(__name__)
 
+_OTEL_SDK_VERSION = opentelemetry_sdk_version.__version__
+_USER_AGENT = f"opentelemetry-python {_OTEL_SDK_VERSION}; google-cloud-trace-exporter {__version__}"
+
+# Set user-agent metadata, see https://github.com/grpc/grpc/issues/23644 and default options
+# from
+# https://github.com/googleapis/python-trace/blob/v1.7.3/google/cloud/trace_v1/services/trace_service/transports/grpc.py#L177-L180
+_OPTIONS = [
+    ("grpc.max_send_message_length", -1),
+    ("grpc.max_receive_message_length", -1),
+    ("grpc.primary_user_agent", _USER_AGENT),
+]
+
+
 MAX_NUM_LINKS = 128
 MAX_NUM_EVENTS = 32
 MAX_EVENT_ATTRS = 4
@@ -93,15 +144,25 @@ MAX_ATTR_KEY_BYTES = 128
 MAX_ATTR_VAL_BYTES = 16 * 1024  # 16 kilobytes
 
 
+def _create_default_client() -> TraceServiceClient:
+    return TraceServiceClient(
+        transport=TraceServiceGrpcTransport(
+            channel=TraceServiceGrpcTransport.create_channel(options=_OPTIONS)
+        )
+    )
+
+
 class CloudTraceSpanExporter(SpanExporter):
     """Cloud Trace span exporter for OpenTelemetry.
 
     Args:
-        project_id: ID of the cloud project that will receive the traces.
+        project_id: GCP project ID for the project to send spans to. Alternatively, can be
+            configured with :envvar:`OTEL_EXPORTER_GCP_TRACE_PROJECT_ID`.
         client: Cloud Trace client. If not given, will be taken from gcloud
             default credentials
-        resource_regex: Resource attributes with keys matching this regex will be
-          added to exported spans as labels (default: None).
+        resource_regex: Resource attributes with keys matching this regex will be added to
+            exported spans as labels (default: None). Alternatively, can be configured with
+            :envvar:`OTEL_EXPORTER_GCP_TRACE_RESOURCE_REGEX`.
     """
 
     def __init__(
@@ -110,11 +171,18 @@ class CloudTraceSpanExporter(SpanExporter):
         client=None,
         resource_regex=None,
     ):
-        self.client: TraceServiceClient = client or TraceServiceClient()
+        self.client: TraceServiceClient = client or _create_default_client()
+
         if not project_id:
-            _, self.project_id = google.auth.default()
-        else:
-            self.project_id = project_id
+            project_id = environ.get(OTEL_EXPORTER_GCP_TRACE_PROJECT_ID)
+        if not project_id:
+            _, project_id = google.auth.default()
+        self.project_id = project_id
+
+        if not resource_regex:
+            resource_regex = environ.get(
+                OTEL_EXPORTER_GCP_TRACE_RESOURCE_REGEX
+            )
         self.resource_regex = (
             re.compile(resource_regex) if resource_regex else None
         )
@@ -193,8 +261,8 @@ class CloudTraceSpanExporter(SpanExporter):
                         MAX_SPAN_ATTRS,
                         add_agent_attr=True,
                     ),
-                    links=_extract_links(span.links),  # type: ignore[has-type]
-                    status=_extract_status(span.status),  # type: ignore[arg-type]
+                    links=_extract_links(span.links),
+                    status=_extract_status(span.status),
                     time_events=_extract_events(span.events),
                     span_kind=_extract_span_kind(span.kind),
                 )
@@ -244,7 +312,7 @@ def _extract_status(status: trace_api.Status) -> Optional[status_pb2.Status]:
         status_proto = status_pb2.Status(code=code_pb2.OK)
     elif status.status_code is StatusCode.ERROR:
         status_proto = status_pb2.Status(
-            code=code_pb2.UNKNOWN, message=status.description
+            code=code_pb2.UNKNOWN, message=status.description or ""
         )
     # future added value
     else:
@@ -253,7 +321,7 @@ def _extract_status(status: trace_api.Status) -> Optional[status_pb2.Status]:
             status.status_code,
         )
         status_proto = status_pb2.Status(
-            code=code_pb2.UNKNOWN, message=status.description
+            code=code_pb2.UNKNOWN, message=status.description or ""
         )
 
     return status_proto
@@ -361,24 +429,6 @@ def _strip_characters(ot_version):
     return "".join(filter(lambda x: x.isdigit() or x == ".", ot_version))
 
 
-OT_RESOURCE_ATTRIBUTE_TO_GCP = {
-    "gce_instance": {
-        "host.id": "instance_id",
-        "cloud.account.id": "project_id",
-        "cloud.zone": "zone",
-    },
-    "gke_container": {
-        "k8s.cluster.name": "cluster_name",
-        "k8s.namespace.name": "namespace_id",
-        "k8s.pod.name": "pod_id",
-        "host.id": "instance_id",
-        "container.name": "container_name",
-        "cloud.account.id": "project_id",
-        "cloud.zone": "zone",
-    },
-}
-
-
 def _extract_resources(
     resource: Resource, resource_regex: Optional[Pattern] = None
 ) -> Dict[str, str]:
@@ -392,24 +442,18 @@ def _extract_resources(
                 if resource_regex.match(k)
             }
         )
-    if resource_attributes.get("cloud.provider") != "gcp":
-        return extracted_attributes
-    resource_type = resource_attributes["gcp.resource_type"]
-    if (
-        not isinstance(resource_type, str)
-        or resource_type not in OT_RESOURCE_ATTRIBUTE_TO_GCP
+    monitored_resource = get_monitored_resource(resource)
+    # Do not map generic_task and generic_node to g.co/r/... span labels.
+    if monitored_resource and monitored_resource.type not in (
+        _resource_constants.GENERIC_NODE,
+        _resource_constants.GENERIC_TASK,
     ):
-        return extracted_attributes
-    extracted_attributes.update(
-        {
-            "g.co/r/{}/{}".format(resource_type, gcp_resource_key): str(
-                resource_attributes[ot_resource_key]
-            )
-            for ot_resource_key, gcp_resource_key in OT_RESOURCE_ATTRIBUTE_TO_GCP[
-                resource_type
-            ].items()
-        }
-    )
+        extracted_attributes.update(
+            {
+                "g.co/r/{}/{}".format(monitored_resource.type, k): v
+                for k, v in monitored_resource.labels.items()
+            }
+        )
     return extracted_attributes
 
 
@@ -434,9 +478,9 @@ def _extract_attributes(
     add_agent_attr: bool = False,
 ) -> trace_types.Span.Attributes:
     """Convert span.attributes to dict."""
-    attributes_dict = BoundedDict(
-        num_attrs_limit
-    )  # type: BoundedDict[str, trace_types.AttributeValue]
+    attributes_dict: BoundedDict[
+        str, trace_types.AttributeValue
+    ] = BoundedDict(num_attrs_limit)
     invalid_value_dropped_count = 0
     for ot_key, ot_value in attrs.items() if attrs else []:
         key = _truncate_str(ot_key, MAX_ATTR_KEY_BYTES)[0]
@@ -451,9 +495,7 @@ def _extract_attributes(
     if add_agent_attr:
         attributes_dict["g.co/agent"] = _format_attribute_value(
             "opentelemetry-python {}; google-cloud-trace-exporter {}".format(
-                _strip_characters(
-                    pkg_resources.get_distribution("opentelemetry-sdk").version
-                ),
+                _strip_characters(_OTEL_SDK_VERSION),
                 _strip_characters(__version__),
             )
         )

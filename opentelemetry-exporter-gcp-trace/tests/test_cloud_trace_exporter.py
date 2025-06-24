@@ -16,12 +16,11 @@ import re
 import unittest
 from unittest import mock
 
-import pkg_resources
 from google.cloud.trace_v2.types import AttributeValue, BatchWriteSpansRequest
 from google.cloud.trace_v2.types import Span as ProtoSpan
 from google.cloud.trace_v2.types import TruncatableString
 from google.rpc import code_pb2
-from google.rpc.status_pb2 import Status
+from google.rpc.status_pb2 import Status  # pylint: disable=no-name-in-module
 from opentelemetry.exporter.cloud_trace import (
     MAX_EVENT_ATTRS,
     MAX_LINK_ATTRS,
@@ -40,6 +39,7 @@ from opentelemetry.exporter.cloud_trace import (
     _truncate_str,
 )
 from opentelemetry.exporter.cloud_trace.version import __version__
+from opentelemetry.sdk import version as opentelemetry_sdk_version
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import Event
 from opentelemetry.sdk.trace import _Span as Span
@@ -51,13 +51,17 @@ from opentelemetry.trace.status import StatusCode
 # pylint: disable=too-many-public-methods
 class TestCloudTraceSpanExporter(unittest.TestCase):
     def setUp(self):
-        self.client_patcher = mock.patch(
-            "opentelemetry.exporter.cloud_trace.TraceServiceClient"
-        )
-        self.client_patcher.start()
+        self.patchers = [
+            mock.patch(
+                "opentelemetry.exporter.cloud_trace._create_default_client"
+            ),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
 
     def tearDown(self):
-        self.client_patcher.stop()
+        for patcher in self.patchers:
+            patcher.stop()
 
     @classmethod
     def setUpClass(cls):
@@ -86,9 +90,7 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
         )
         cls.agent_code = _format_attribute_value(
             "opentelemetry-python {}; google-cloud-trace-exporter {}".format(
-                _strip_characters(
-                    pkg_resources.get_distribution("opentelemetry-sdk").version
-                ),
+                _strip_characters(opentelemetry_sdk_version.__version__),
                 _strip_characters(__version__),
             )
         )
@@ -116,11 +118,14 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
     def test_export(self):
         resource_info = Resource(
             {
-                "cloud.account.id": 123,
-                "host.id": "host",
-                "cloud.zone": "US",
+                "cloud.account.id": "123",
+                "cloud.platform": "gcp_compute_engine",
                 "cloud.provider": "gcp",
-                "gcp.resource_type": "gce_instance",
+                "cloud.region": "us-east4",
+                "cloud.availability_zone": "us-east4-b",
+                "host.id": "host",
+                "host.name": "fakeName",
+                "host.type": "fakeMachineType",
             }
         )
         span_datas = [
@@ -149,12 +154,11 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
             ),
             "attributes": ProtoSpan.Attributes(
                 attribute_map={
-                    "g.co/r/gce_instance/zone": _format_attribute_value("US"),
+                    "g.co/r/gce_instance/zone": _format_attribute_value(
+                        "us-east4-b"
+                    ),
                     "g.co/r/gce_instance/instance_id": _format_attribute_value(
                         "host"
-                    ),
-                    "g.co/r/gce_instance/project_id": _format_attribute_value(
-                        "123"
                     ),
                     "g.co/agent": self.agent_code,
                     "attr_key": _format_attribute_value("attr_value"),
@@ -546,6 +550,7 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
             ),
             attributes={"illegal_attr_value": dict(), "int_attr_value": 123},
         )
+        print(link3.attributes)
         self.assertEqual(
             _extract_links([link1, link2, link3]),
             ProtoSpan.Links(
@@ -567,6 +572,7 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
                         "span_id": span_id2,
                         "type": "TYPE_UNSPECIFIED",
                         "attributes": {
+                            "dropped_attributes_count": 1,
                             "attribute_map": {
                                 "int_attr_value": AttributeValue(int_value=123)
                             },
@@ -644,27 +650,30 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
         )
 
     def test_extract_empty_resources(self):
-        self.assertEqual(_extract_resources(Resource.get_empty()), {})
+        self.assertEqual(
+            _extract_resources(Resource.get_empty()),
+            {},
+        )
 
     def test_extract_resource_attributes_with_regex(self):
         resource_regex = re.compile(r"service\..*")
         resource = Resource(
             attributes={
-                "cloud.account.id": 123,
-                "host.id": "host",
-                "cloud.zone": "US",
+                "cloud.account.id": "123",
+                "cloud.availability_zone": "us-east4-b",
+                "cloud.platform": "gcp_compute_engine",
                 "cloud.provider": "gcp",
-                "extra_info": "extra",
-                "gcp.resource_type": "gce_instance",
-                "not_gcp_resource": "value",
+                "cloud.region": "us-east4",
+                "host.id": "host",
+                "host.name": "fakeName",
+                "host.type": "fakeMachineType",
                 "service.name": "my-app",
                 "service.version": "1",
             }
         )
         expected_extract = {
-            "g.co/r/gce_instance/project_id": "123",
             "g.co/r/gce_instance/instance_id": "host",
-            "g.co/r/gce_instance/zone": "US",
+            "g.co/r/gce_instance/zone": "us-east4-b",
             "service.name": "my-app",
             "service.version": "1",
         }
@@ -676,19 +685,19 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
         resource_regex = re.compile(r"this-regex-matches-nothing")
         resource = Resource(
             attributes={
-                "cloud.account.id": 123,
-                "host.id": "host",
-                "cloud.zone": "US",
+                "cloud.account.id": "123",
+                "cloud.availability_zone": "us-east4-b",
+                "cloud.platform": "gcp_compute_engine",
                 "cloud.provider": "gcp",
-                "extra_info": "extra",
-                "gcp.resource_type": "gce_instance",
-                "not_gcp_resource": "value",
+                "cloud.region": "us-east4",
+                "host.id": "host",
+                "host.name": "fakeName",
+                "host.type": "fakeMachineType",
             }
         )
         expected_extract = {
-            "g.co/r/gce_instance/project_id": "123",
             "g.co/r/gce_instance/instance_id": "host",
-            "g.co/r/gce_instance/zone": "US",
+            "g.co/r/gce_instance/zone": "us-east4-b",
         }
         self.assertEqual(
             _extract_resources(resource, resource_regex), expected_extract
@@ -697,33 +706,21 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
     def test_extract_well_formed_resources(self):
         resource = Resource(
             attributes={
-                "cloud.account.id": 123,
-                "host.id": "host",
-                "cloud.zone": "US",
+                "cloud.account.id": "123",
+                "cloud.availability_zone": "us-east4-b",
+                "cloud.platform": "gcp_compute_engine",
                 "cloud.provider": "gcp",
-                "extra_info": "extra",
-                "gcp.resource_type": "gce_instance",
-                "not_gcp_resource": "value",
+                "cloud.region": "us-east4",
+                "host.id": "host",
+                "host.name": "fakeName",
+                "host.type": "fakeMachineType",
             }
         )
         expected_extract = {
-            "g.co/r/gce_instance/project_id": "123",
             "g.co/r/gce_instance/instance_id": "host",
-            "g.co/r/gce_instance/zone": "US",
+            "g.co/r/gce_instance/zone": "us-east4-b",
         }
         self.assertEqual(_extract_resources(resource), expected_extract)
-
-    def test_extract_malformed_resources(self):
-        # This resource doesn't have all the fields required for a gce_instance
-        # Specifically its missing "host.id", "cloud.zone", "cloud.account.id"
-        resource = Resource(
-            attributes={
-                "gcp.resource_type": "gce_instance",
-                "cloud.provider": "gcp",
-            }
-        )
-        # Should throw when passed a malformed GCP resource dict
-        self.assertRaises(KeyError, _extract_resources, resource)
 
     def test_extract_unsupported_gcp_resources(self):
         # Unsupported gcp resources will be ignored
@@ -733,24 +730,14 @@ class TestCloudTraceSpanExporter(unittest.TestCase):
                 "host.id": "host",
                 "extra_info": "extra",
                 "not_gcp_resource": "value",
-                "gcp.resource_type": "unsupported_gcp_resource",
+                "cloud.platform": "gcp_some_unsupported_thing",
                 "cloud.provider": "gcp",
             }
         )
-        self.assertEqual(_extract_resources(resource), {})
-
-    def test_extract_unsupported_provider_resources(self):
-        # Resources with currently unsupported providers will be ignored
-        resource = Resource(
-            attributes={
-                "cloud.account.id": "123",
-                "host.id": "host",
-                "extra_info": "extra",
-                "not_gcp_resource": "value",
-                "cloud.provider": "aws",
-            }
+        self.assertEqual(
+            _extract_resources(resource),
+            {},
         )
-        self.assertEqual(_extract_resources(resource), {})
 
     def test_truncate_string(self):
         """Cloud Trace API imposes limits on the length of many things,

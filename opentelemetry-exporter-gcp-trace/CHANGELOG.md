@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+Update opentelemetry-api/sdk dependencies to 1.3.
+
+## Version 1.9.0
+
+Released 2025-02-03
+
+## Version 1.8.0
+
+Released 2025-01-08
+
+## Version 1.7.0
+
+Released 2024-08-27
+
+- Add support for Python 3.12 (#343)
+  ([#343](https://github.com/GoogleCloudPlatform/opentelemetry-operations-python/pull/343))
+
+## Version 1.6.0
+
+Released 2023-10-16
+
+- Don't use `pkg_resources.get_distribution(..).version`
+  ([#256](https://github.com/GoogleCloudPlatform/opentelemetry-operations-python/pull/256))
+
+## Version 1.5.0
+
+Released 2023-05-17
+
+- Add support for Python 3.11
+  ([#240](https://github.com/GoogleCloudPlatform/opentelemetry-operations-python/pull/240))
+
+## Version 1.4.0
+
+Released 2022-12-05
+
+- Set gRPC user-agent when calling google APIs
+  ([#216](https://github.com/GoogleCloudPlatform/opentelemetry-operations-python/pull/216))
+- Drop support for Python 3.6, add 3.10
+  ([#203](https://github.com/GoogleCloudPlatform/opentelemetry-operations-python/pull/203))
+
+## Version 1.3.0
+
+Released 2022-04-21
+
+## Version 1.2.0
+
+Released 2022-04-05
+
+- Add entry point for Cloud Trace exporter to work with auto instrumentation
+  ([#179](https://github.com/GoogleCloudPlatform/opentelemetry-operations-python/pull/179))
+
 ## Version 1.1.0
 
 Released 2022-01-13
