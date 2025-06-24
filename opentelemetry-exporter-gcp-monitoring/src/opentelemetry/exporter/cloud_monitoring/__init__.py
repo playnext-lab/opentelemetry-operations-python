@@ -58,6 +58,15 @@ OT_RESOURCE_LABEL_TO_GCP = {
         "cloud.account.id": "project_id",
         "cloud.zone": "zone",
     },
+    "k8s_container": {
+        "pod_name": "pod_name",
+        "container_name": "container_name",
+        "cluster_name": "cluster_name",
+        "location":  "location",
+        "project_id": "project_id",
+        "namespace_name": "namespace_name",
+        "cloud.account.id": "project_id",
+    }
 }
 
 
@@ -82,8 +91,10 @@ class CloudMonitoringMetricsExporter(MetricsExporter):
     """
 
     def __init__(
-        self, project_id=None, client=None, add_unique_identifier=False
+        self, project_id=None, client=None, add_unique_identifier=False, prefix=None
     ):
+        # print("init prefix",prefix)
+        self.prefix = prefix
         self.client = client or MetricServiceClient()
         if not project_id:
             _, self.project_id = google.auth.default()
@@ -160,9 +171,15 @@ class CloudMonitoringMetricsExporter(MetricsExporter):
         :return:
         """
         instrument = record.instrument
-        descriptor_type = "custom.googleapis.com/OpenTelemetry/{}".format(
+        print("prefix get metric descriptor",self.prefix)
+        if self.prefix != None:
+            descriptor_type = "custom.googleapis.com/{}/{}".format(self.prefix,
             instrument.name
-        )
+            )
+        else :
+            descriptor_type = "custom.googleapis.com/OpenTelemetry/{}".format(
+                instrument.name
+            )
         if descriptor_type in self._metric_descriptors:
             return self._metric_descriptors[descriptor_type]
 
