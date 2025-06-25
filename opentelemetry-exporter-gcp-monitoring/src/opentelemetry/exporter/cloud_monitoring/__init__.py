@@ -200,15 +200,14 @@ class CloudMonitoringMetricsExporter(MetricExporter):
         :param record:
         :return:
         """
-        instrument = record.instrument
         print("prefix get metric descriptor",self._prefix)
         if self._prefix != None:
             descriptor_type = "custom.googleapis.com/{}/{}".format(self._prefix,
-            instrument.name
+            metric.name
             )
         else :
             descriptor_type = "custom.googleapis.com/OpenTelemetry/{}".format(
-                instrument.name
+                metric.name
             )
         # descriptor_type = f"{self._prefix}/{metric.name}"
         if descriptor_type in self._metric_descriptors:
